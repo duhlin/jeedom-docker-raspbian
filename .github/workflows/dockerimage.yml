@@ -3,8 +3,9 @@ name: Docker Image CI
 on:
   push:
     branches: [ master ]
-  pull_request:
-    branches: [ master ]
+      
+env:
+  docker_registry: localhost:5000/${{ github.repository }}
 
 jobs:
   build:
@@ -17,18 +18,28 @@ jobs:
         chmod a+x ~/.docker/cli-plugins/docker-buildx
         docker buildx version
         docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        docker buildx create --name jeedom-docker-builder --driver docker-container --use
+        docker buildx create --name jeedom-docker-builder --driver docker-container --use --driver-opt network=host
+    - name: Start registry
+      run: |
+        docker run -d --restart=always --name registry -p 5000:5000 -e REGISTRY_HTTP_SECRET=$registry_http_secret -e REGISTRY_STORAGE=azure -e REGISTRY_STORAGE_AZURE_ACCOUNTKEY=$registry_storage_azure_accountkey -e REGISTRY_STORAGE_AZURE_ACCOUNTNAME=$registry_storage_azure_accountname -e REGISTRY_STORAGE_AZURE_CONTAINER=$registry_storage_azure_container registry:2
+        sleep 5
+        curl http://localhost:5000/v2/_catalog
+        docker ps
+      env:
+        raspbian: raspbian/stretch:latest
+        registry_storage_azure_accountkey: ${{ secrets.registry_storage_azure_accountkey }}
+        registry_storage_azure_accountname: ${{ secrets.registry_storage_azure_accountname }}
+        registry_storage_azure_container: ${{ secrets.registry_storage_azure_container }}
+        registry_http_secret: ${{ secrets.registry_http_secret }}
     - uses: actions/checkout@v2
-    - name: Build the Docker images
+    - name: Build & Publish the Docker images
       run: |
-        docker buildx build --platform linux/arm,linux/arm64 backup --file backup/Dockerfile --tag jeedom_backup:latest
-        docker buildx build --platform linux/arm,linux/arm64 jeedom-core#stable --file jeedom-core#stable/Dockerfile --tag jeedom_server:latest
-    - name: Publish the Docker images
-      if: github.event_name == 'push'
-      run: |
-        docker tag jeedom_backup:latest docker.pkg.github.com/$GITHUB_REPOSITORY/jeedom_backup_multiarch:latest
-        docker tag jeedom_server:latest docker.pkg.github.com/$GITHUB_REPOSITORY/jeedom_server_multiarch:latest
-        echo "${{ secrets.GITHUB_TOKEN }}" | docker login -u "$GITHUB_ACTOR" https://pkg.docker.github.com/$GITHUB_REPOSITORY --password-stdin
-        docker push docker.pkg.github.com/$GITHUB_REPOSITORY/jeedom_backup_multiarch:latest
-        docker push docker.pkg.github.com/$GITHUB_REPOSITORY/jeedom_server_multiarch:latest
+        docker buildx build --platform $platform --file backup/Dockerfile --tag $backup_image --push --cache-from=$backup_cache_config --cache-to=$backup_cache_config backup/
+        docker buildx build --platform $platform --file jeedom-core#stable/Dockerfile --tag $server_image --push --cache-from=$server_cache_config --cache-to=$server_cache_config jeedom-core#stable/
+      env:
+        backup_image: ${{ env.docker_registry }}/jeedom_backup_multiarch:latest
+        server_image: ${{ env.docker_registry }}/jeedom_server_multiarch:latest
+        platform: linux/arm
+        backup_cache_config: type=registry,ref=${{ env.docker_registry }}/jeedom_backup_multiarch:cache
+        server_cache_config: type=registry,ref=${{ env.docker_registry }}/jeedom_server_multiarch:cache
 
